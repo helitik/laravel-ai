@@ -181,7 +181,10 @@ test('captures streamed reasoning on the paused turn state', function (): void {
 
     expect($paused->hasPendingApprovals())->toBeTrue()
         ->and($paused->pausedProviderContentBlocks())
-        ->toBe(['reasoning_content' => 'I should call the generator.']);
+        ->toBe([
+            'reasoning_content' => 'I should call the generator.',
+            'reasoning_field' => 'reasoning',
+        ]);
 });
 
 test('captures reasoning from a non-streamed response on the paused turn state', function (): void {
@@ -212,7 +215,10 @@ test('captures reasoning from a non-streamed response on the paused turn state',
 
     expect($response->hasPendingApprovals())->toBeTrue()
         ->and($response->pausedProviderContentBlocks())
-        ->toBe(['reasoning_content' => 'I should call the generator.']);
+        ->toBe([
+            'reasoning_content' => 'I should call the generator.',
+            'reasoning_field' => 'reasoning',
+        ]);
 });
 
 test('emits reasoning events from the reasoning_details field', function (): void {
@@ -345,6 +351,93 @@ test('replays anthropic reasoning text that kept its signature', function (): vo
     expect($assistantMessage['reasoning_details'][0]['signature'])->toBe('sha256:abc123');
 });
 
+test('falls back to plain reasoning when any block in the sequence lost its signature', function (): void {
+    Http::fake([
+        '*' => Http::sequence([
+            fakeOpenRouterToolCallResponse([
+                'reasoning' => 'First thought. Second thought.',
+                'reasoning_details' => [
+                    [
+                        'type' => 'reasoning.text',
+                        'text' => 'First thought.',
+                        'id' => 'reasoning-text-1',
+                        'format' => 'anthropic-claude-v1',
+                    ],
+                    [
+                        'type' => 'reasoning.text',
+                        'text' => ' Second thought.',
+                        'signature' => 'sha256:abc123',
+                        'id' => 'reasoning-text-2',
+                        'format' => 'anthropic-claude-v1',
+                    ],
+                ],
+            ]),
+            fakeOpenRouterResponse('The number is 72019'),
+        ]),
+    ]);
+
+    agent(tools: [new FixedNumberGenerator])->prompt('Give me a number', provider: 'openrouter');
+
+    $assistantMessage = $this->findMessage($this->requestMessages(1), role: 'assistant', has: 'tool_calls');
+
+    // Replaying the signed block alone would leave a gap in a sequence OpenRouter requires back unmodified...
+    expect($assistantMessage)->not->toHaveKey('reasoning_details')
+        ->and($assistantMessage['reasoning'])->toBe('First thought. Second thought.');
+});
+
+test('captures reasoning text that is only a zero', function (): void {
+    Http::fake([
+        '*' => Http::sequence([
+            fakeOpenRouterToolCallResponse(['reasoning' => '0']),
+            fakeOpenRouterResponse('The number is 72019'),
+        ]),
+    ]);
+
+    agent(tools: [new FixedNumberGenerator])->prompt('Give me a number', provider: 'openrouter');
+
+    $assistantMessage = $this->findMessage($this->requestMessages(1), role: 'assistant', has: 'tool_calls');
+
+    expect($assistantMessage['reasoning'])->toBe('0');
+});
+
+test('keeps unkeyed details from separate chunks apart', function (): void {
+    Http::fake([
+        '*' => Http::sequence([
+            Http::response($this->ssePayload([
+                $this->chatChunk(['role' => 'assistant', 'reasoning_details' => [[
+                    'type' => 'reasoning.text',
+                    'text' => 'First thought.',
+                    'format' => 'openai-responses-v1',
+                ]]]),
+                $this->chatChunk(['reasoning_details' => [[
+                    'type' => 'reasoning.text',
+                    'text' => 'Second thought.',
+                    'format' => 'openai-responses-v1',
+                ]]]),
+                $this->chatChunkToolCallStart(0, 'call_1', 'FixedNumberGenerator'),
+                $this->chatChunkToolCallDelta(0, '{}'),
+                $this->chatChunkFinish('tool_calls', ['prompt_tokens' => 10, 'completion_tokens' => 5]),
+            ])),
+            Http::response($this->ssePayload([
+                $this->chatChunk(['role' => 'assistant', 'content' => 'The number is 72019']),
+                $this->chatChunkFinish('stop', ['prompt_tokens' => 20, 'completion_tokens' => 5]),
+            ])),
+        ]),
+    ]);
+
+    foreach (agent(tools: [new FixedNumberGenerator])->stream('Give me a number', provider: 'openrouter') as $event) {
+        //
+    }
+
+    $assistantMessage = $this->findMessage($this->requestMessages(1), role: 'assistant', has: 'tool_calls');
+
+    // Details carrying neither an id nor an index are distinct blocks, never fragments of one...
+    expect($assistantMessage['reasoning_details'])->toBe([
+        ['type' => 'reasoning.text', 'text' => 'First thought.', 'format' => 'openai-responses-v1'],
+        ['type' => 'reasoning.text', 'text' => 'Second thought.', 'format' => 'openai-responses-v1'],
+    ]);
+});
+
 test('replays unsigned reasoning text from providers that issue no signatures', function (): void {
     Http::fake([
         '*' => Http::sequence([
@@ -457,6 +550,105 @@ test('concatenates a fragment that happens to start with the text captured so fa
     expect($assistantMessage['reasoning_details'][0]['text'])->toBe('****Analysis**');
 });
 
+test('replays an empty reasoning details array back to the model', function (): void {
+    // DeepSeek V4 answers with an empty array on turns it produced no reasoning for, and requires it back...
+    Http::fake([
+        '*' => Http::sequence([
+            fakeOpenRouterToolCallResponse(['reasoning_details' => []]),
+            fakeOpenRouterResponse('The number is 72019'),
+        ]),
+    ]);
+
+    agent(tools: [new FixedNumberGenerator])->prompt('Give me a number', provider: 'openrouter');
+
+    $assistantMessage = $this->findMessage($this->requestMessages(1), role: 'assistant', has: 'tool_calls');
+
+    expect($assistantMessage)->toHaveKey('reasoning_details')
+        ->and($assistantMessage['reasoning_details'])->toBe([]);
+});
+
+test('replays a streamed empty reasoning details array back to the model', function (): void {
+    Http::fake([
+        '*' => Http::sequence([
+            Http::response($this->ssePayload([
+                $this->chatChunk(['role' => 'assistant', 'reasoning_details' => []]),
+                $this->chatChunkToolCallStart(0, 'call_1', 'FixedNumberGenerator'),
+                $this->chatChunkToolCallDelta(0, '{}'),
+                $this->chatChunkFinish('tool_calls', ['prompt_tokens' => 10, 'completion_tokens' => 5]),
+            ])),
+            Http::response($this->ssePayload([
+                $this->chatChunk(['role' => 'assistant', 'content' => 'The number is 72019']),
+                $this->chatChunkFinish('stop', ['prompt_tokens' => 20, 'completion_tokens' => 5]),
+            ])),
+        ]),
+    ]);
+
+    foreach (agent(tools: [new FixedNumberGenerator])->stream('Give me a number', provider: 'openrouter') as $event) {
+        //
+    }
+
+    $assistantMessage = $this->findMessage($this->requestMessages(1), role: 'assistant', has: 'tool_calls');
+
+    expect($assistantMessage)->toHaveKey('reasoning_details')
+        ->and($assistantMessage['reasoning_details'])->toBe([]);
+});
+
+test('sends no reasoning details key when the response carried none', function (): void {
+    Http::fake([
+        '*' => Http::sequence([
+            fakeOpenRouterToolCallResponse(['reasoning' => 'I need the generator for this.']),
+            fakeOpenRouterResponse('The number is 72019'),
+        ]),
+    ]);
+
+    agent(tools: [new FixedNumberGenerator])->prompt('Give me a number', provider: 'openrouter');
+
+    $assistantMessage = $this->findMessage($this->requestMessages(1), role: 'assistant', has: 'tool_calls');
+
+    expect($assistantMessage)->not->toHaveKey('reasoning_details');
+});
+
+test('falls back to plain reasoning when a gemini block lost its thought signature', function (): void {
+    Http::fake([
+        '*' => Http::sequence([
+            fakeOpenRouterToolCallResponse([
+                'reasoning' => 'I need the generator for this.',
+                'reasoning_details' => [[
+                    'type' => 'reasoning.text',
+                    'text' => 'I need the generator for this.',
+                    'id' => 'reasoning-text-1',
+                    'format' => 'google-gemini-v1',
+                ]],
+            ]),
+            fakeOpenRouterResponse('The number is 72019'),
+        ]),
+    ]);
+
+    agent(tools: [new FixedNumberGenerator])->prompt('Give me a number', provider: 'openrouter');
+
+    $assistantMessage = $this->findMessage($this->requestMessages(1), role: 'assistant', has: 'tool_calls');
+
+    // Gemini reports a corrupted thought signature rather than ignoring the block...
+    expect($assistantMessage)->not->toHaveKey('reasoning_details')
+        ->and($assistantMessage['reasoning'])->toBe('I need the generator for this.');
+});
+
+test('replays reasoning under the reasoning_content field when the response used it', function (): void {
+    Http::fake([
+        '*' => Http::sequence([
+            fakeOpenRouterToolCallResponse(['reasoning_content' => 'I need the generator for this.']),
+            fakeOpenRouterResponse('The number is 72019'),
+        ]),
+    ]);
+
+    agent(tools: [new FixedNumberGenerator])->prompt('Give me a number', provider: 'openrouter');
+
+    $assistantMessage = $this->findMessage($this->requestMessages(1), role: 'assistant', has: 'tool_calls');
+
+    expect($assistantMessage['reasoning_content'])->toBe('I need the generator for this.')
+        ->and($assistantMessage)->not->toHaveKey('reasoning');
+});
+
 test('closes an open reasoning block before an upstream error', function (): void {
     Http::fake([
         '*' => Http::response($this->ssePayload([
@@ -556,7 +748,7 @@ test('replays reasoning alongside tool calls on the follow up request', function
 
     $assistantMessage = $this->findMessage($this->requestMessages(1), role: 'assistant', has: 'tool_calls');
 
-    // OpenRouter accepts `reasoning` as plain text; `reasoning_content` is a DeepSeek field it ignores...
+    // OpenRouter accepts `reasoning` as plain text, and treats `reasoning_content` as an alias for it...
     expect($assistantMessage['reasoning'])->toBe('I need the generator for this.')
         ->and($assistantMessage)->not->toHaveKey('reasoning_content')
         ->and($assistantMessage['tool_calls'][0]['function']['name'])->toBe('FixedNumberGenerator');

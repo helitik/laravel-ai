@@ -62,12 +62,13 @@ class OpenRouterGateway implements Gateway, RerankingGateway, StepTextGateway
     }
 
     /**
-     * Get the reasoning fields to replay for the given assistant message, preferring `reasoning_details` since they carry the signatures and encrypted payloads OpenRouter requires back unmodified.
+     * Get the reasoning fields to replay for the given assistant message, preferring the details that carry signatures and encrypted payloads.
      *
      * @return array<string, mixed>
      */
     protected function replayableReasoningFor(AssistantMessage $message): array
     {
+        // DeepSeek V4 answers with an empty details array on silent turns and requires that array back...
         $details = ChatCompletionReasoning::replayableDetailsFrom($message->providerContentBlocks);
 
         if ($details !== null) {
@@ -76,7 +77,10 @@ class OpenRouterGateway implements Gateway, RerankingGateway, StepTextGateway
 
         $reasoning = ChatCompletionReasoning::replayableFrom($message->providerContentBlocks);
 
-        return $reasoning === null ? [] : ['reasoning' => $reasoning];
+        return $reasoning === null ? [] : [ChatCompletionReasoning::replayableFieldFrom(
+            $message->providerContentBlocks,
+            default: 'reasoning',
+        ) => $reasoning];
     }
 
     /**

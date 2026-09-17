@@ -3,7 +3,6 @@
 namespace Laravel\Ai\Gateway\OpenAiCompatible;
 
 use Generator;
-use Illuminate\Support\Arr;
 use Illuminate\Support\Str;
 use Laravel\Ai\Streaming\Events\ReasoningDelta;
 use Laravel\Ai\Streaming\Events\ReasoningEnd;
@@ -16,7 +15,7 @@ use Laravel\Ai\Streaming\Events\StreamEvent;
 class ChatCompletionReasoning
 {
     /**
-     * The provider content block key holding the readable reasoning text.
+     * The provider content block key holding the readable reasoning text, which doubles as DeepSeek's inbound field name.
      */
     public const CONTENT_BLOCK_KEY = 'reasoning_content';
 
@@ -24,6 +23,16 @@ class ChatCompletionReasoning
      * The provider content block key holding the structured reasoning details.
      */
     public const DETAILS_BLOCK_KEY = 'reasoning_details';
+
+    /**
+     * The provider content block key recording which wire field the readable text arrived under.
+     */
+    public const FIELD_BLOCK_KEY = 'reasoning_field';
+
+    /**
+     * The wire fields carrying plain text reasoning, in the order they are read.
+     */
+    public const TEXT_FIELDS = ['reasoning', self::CONTENT_BLOCK_KEY];
 
     /**
      * The ID shared by the events of the currently open reasoning block.
@@ -48,6 +57,21 @@ class ChatCompletionReasoning
     protected array $details = [];
 
     /**
+     * The number of details seen that carried no id or index to merge on.
+     */
+    protected int $unkeyed = 0;
+
+    /**
+     * The wire field the readable reasoning text arrived under.
+     */
+    protected ?string $field = null;
+
+    /**
+     * Indicates if the stream carried a reasoning details array, including an empty one.
+     */
+    protected bool $sawDetails = false;
+
+    /**
      * Where this stream reads its reasoning text from, either "plain" or "details".
      */
     protected ?string $source = null;
@@ -62,7 +86,9 @@ class ChatCompletionReasoning
      */
     public function process(array $delta): Generator
     {
-        $plain = static::plainTextFrom($delta);
+        [$plain, $field] = static::plainFrom($delta);
+
+        $this->field ??= $field;
 
         // Details are merged even when the text is read elsewhere, since only they can be replayed verbatim...
         $details = $this->mergeDetails($delta);
@@ -123,7 +149,11 @@ class ChatCompletionReasoning
      */
     public function providerContentBlocks(): array
     {
-        return static::providerContentBlocksFor($this->text, array_values($this->details));
+        return static::providerContentBlocksFor(
+            $this->text,
+            $this->sawDetails ? array_values($this->details) : null,
+            $this->field,
+        );
     }
 
     /**
@@ -134,21 +164,28 @@ class ChatCompletionReasoning
      */
     public static function providerContentBlocksIn(array $message): array
     {
-        return static::providerContentBlocksFor(static::textFrom($message), static::detailsFrom($message));
+        return static::providerContentBlocksFor(
+            static::textFrom($message),
+            static::detailsIn($message),
+            static::plainFrom($message)[1],
+        );
     }
 
     /**
      * Get the provider content blocks holding the given reasoning text and details.
      *
-     * @param  array<int, array<string, mixed>>  $details
+     * A null details array means the payload carried none, which an empty one does not.
+     *
+     * @param  array<int, array<string, mixed>>|null  $details
      * @return array<string, mixed>
      */
-    public static function providerContentBlocksFor(string $reasoning, array $details = []): array
+    public static function providerContentBlocksFor(string $reasoning, ?array $details = null, ?string $field = null): array
     {
         return array_filter([
-            static::CONTENT_BLOCK_KEY => $reasoning,
+            static::CONTENT_BLOCK_KEY => $reasoning === '' ? null : $reasoning,
             static::DETAILS_BLOCK_KEY => $details,
-        ]);
+            static::FIELD_BLOCK_KEY => $reasoning === '' ? null : $field,
+        ], fn (string|array|null $value): bool => $value !== null);
     }
 
     /**
@@ -164,30 +201,55 @@ class ChatCompletionReasoning
     }
 
     /**
-     * Get the structured reasoning details to replay verbatim, which carry the signatures and encrypted payloads that the readable text loses.
+     * Get the wire field the readable reasoning text should be replayed under.
+     *
+     * @param  array<array-key, mixed>  $providerContentBlocks
+     */
+    public static function replayableFieldFrom(array $providerContentBlocks, string $default): string
+    {
+        $field = $providerContentBlocks[static::FIELD_BLOCK_KEY] ?? null;
+
+        return in_array($field, static::TEXT_FIELDS, true) ? $field : $default;
+    }
+
+    /**
+     * Get the structured reasoning details to replay verbatim, which carry signatures and encrypted payloads the readable text loses.
      *
      * @param  array<array-key, mixed>  $providerContentBlocks
      * @return array<int, array<string, mixed>>|null
      */
     public static function replayableDetailsFrom(array $providerContentBlocks): ?array
     {
-        $details = Arr::where(
-            Arr::wrap($providerContentBlocks[static::DETAILS_BLOCK_KEY] ?? null),
-            fn (mixed $detail): bool => is_array($detail) && ! static::isUnsignedAnthropicText($detail),
-        );
+        $details = $providerContentBlocks[static::DETAILS_BLOCK_KEY] ?? null;
 
-        return $details === [] ? null : array_values($details);
+        if (! is_array($details)) {
+            return null;
+        }
+
+        $details = array_values(array_filter($details, is_array(...)));
+
+        // OpenRouter requires the whole sequence back unmodified, so one unsigned block invalidates all of them...
+        foreach ($details as $detail) {
+            if (static::isUnsignedThinkingText($detail)) {
+                return null;
+            }
+        }
+
+        return $details;
     }
 
     /**
-     * Determine if the given detail is an Anthropic reasoning text block that lost the signature Anthropic requires back.
+     * Determine if the given detail is a reasoning text block that lost the signature its format requires back.
      *
      * @param  array<string, mixed>  $detail
      */
-    protected static function isUnsignedAnthropicText(array $detail): bool
+    protected static function isUnsignedThinkingText(array $detail): bool
     {
+        // Anthropic rejects unsigned thinking, and Gemini reports a corrupted thought signature...
+        $signed = ['anthropic', 'google-gemini'];
+
         return ($detail['type'] ?? null) === 'reasoning.text'
-            && str_starts_with((string) ($detail['format'] ?? ''), 'anthropic')
+            && Str::startsWith((string) ($detail['format'] ?? ''), $signed)
             && blank($detail['signature'] ?? null);
     }
 
@@ -198,7 +260,7 @@ class ChatCompletionReasoning
      */
     public static function textFrom(array $payload): string
     {
-        $reasoning = static::plainTextFrom($payload);
+        $reasoning = static::plainFrom($payload)[0];
 
         return $reasoning === '' ? static::detailsTextFrom($payload) : $reasoning;
     }
@@ -211,9 +273,20 @@ class ChatCompletionReasoning
      */
     public static function detailsFrom(array $payload): array
     {
+        return static::detailsIn($payload) ?? [];
+    }
+
+    /**
+     * Extract the structured reasoning details, returning null when the payload carried none at all.
+     *
+     * @param  array<string, mixed>  $payload
+     * @return array<int, array<string, mixed>>|null
+     */
+    public static function detailsIn(array $payload): ?array
+    {
         $details = $payload[static::DETAILS_BLOCK_KEY] ?? null;
 
-        return array_values(array_filter(is_array($details) ? $details : [], is_array(...)));
+        return is_array($details) ? array_values(array_filter($details, is_array(...))) : null;
     }
 
     /**
@@ -225,9 +298,11 @@ class ChatCompletionReasoning
     {
         $arrived = '';
 
-        foreach (static::detailsFrom($delta) as $position => $detail) {
-            // Reasoning details of different types may share an id or index; those with neither carry no signatures a wrong positional merge could invalidate...
-            $key = ($detail['type'] ?? '').'#'.($detail['id'] ?? $detail['index'] ?? $position);
+        $this->sawDetails = $this->sawDetails || static::detailsIn($delta) !== null;
+
+        foreach (static::detailsFrom($delta) as $detail) {
+            // Details of different types may share an id or index, and those carrying neither cannot be merged at all...
+            $key = ($detail['type'] ?? '').'#'.($detail['id'] ?? $detail['index'] ?? 'unkeyed-'.$this->unkeyed++);
 
             if (! isset($this->details[$key])) {
                 $this->details[$key] = $detail;
@@ -269,20 +344,23 @@ class ChatCompletionReasoning
     }
 
     /**
-     * Extract the plain text reasoning from a Chat Completions message or streaming delta.
+     * Extract the plain text reasoning and the wire field it arrived under.
      *
      * @param  array<string, mixed>  $payload
+     * @return array{0: string, 1: string|null}
      */
-    protected static function plainTextFrom(array $payload): string
+    protected static function plainFrom(array $payload): array
     {
-        // OpenRouter sends `reasoning`, while DeepSeek, LiteLLM and vLLM send `reasoning_content`...
-        foreach ([$payload['reasoning'] ?? null, $payload[static::CONTENT_BLOCK_KEY] ?? null] as $reasoning) {
+        // OpenRouter and current vLLM send `reasoning`, while DeepSeek and older vLLM send `reasoning_content`...
+        foreach (static::TEXT_FIELDS as $field) {
+            $reasoning = $payload[$field] ?? null;
+
             if (is_string($reasoning) && $reasoning !== '') {
-                return $reasoning;
+                return [$reasoning, $field];
             }
         }
 
-        return '';
+        return ['', null];
     }
 
     /**

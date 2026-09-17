@@ -96,7 +96,15 @@ trait MapsChatCompletionMessages
     {
         $reasoning = ChatCompletionReasoning::replayableFrom($message->providerContentBlocks);
 
-        return $reasoning === null ? [] : [ChatCompletionReasoning::CONTENT_BLOCK_KEY => $reasoning];
+        if ($reasoning === null) {
+            return [];
+        }
+
+        // vLLM renamed `reasoning_content` to `reasoning`, so the field it answered on is the one it accepts back...
+        return [ChatCompletionReasoning::replayableFieldFrom(
+            $message->providerContentBlocks,
+            default: ChatCompletionReasoning::CONTENT_BLOCK_KEY,
+        ) => $reasoning];
     }
 
     /**
