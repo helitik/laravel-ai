@@ -342,7 +342,7 @@ describe('usage tracking', function (): void {
                     $this->contentBlockStart(0, ['type' => 'text', 'text' => '']),
                     $this->contentBlockDelta(0, ['type' => 'text_delta', 'text' => 'Hello']),
                     $this->contentBlockStop(0),
-                    $this->messageDelta('end_turn', 10),
+                    $this->messageDelta('end_turn', 10, thinkingTokens: 6),
                 ]),
                 status: 200,
                 headers: ['Content-Type' => 'text/event-stream'],
@@ -357,7 +357,8 @@ describe('usage tracking', function (): void {
             ->promptTokens->toBe(42)
             ->completionTokens->toBe(10)
             ->cacheWriteInputTokens->toBe(100)
-            ->cacheReadInputTokens->toBe(50);
+            ->cacheReadInputTokens->toBe(50)
+            ->reasoningTokens->toBe(6);
     });
 
     test('streaming prefers the cumulative usage reported on message delta', function (): void {

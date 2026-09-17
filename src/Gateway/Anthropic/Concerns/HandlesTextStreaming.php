@@ -329,6 +329,7 @@ trait HandlesTextStreaming
                     $deltaUsage['output_tokens'] ?? 0,
                     $cacheCreationTokens,
                     $cacheReadTokens,
+                    $deltaUsage['output_tokens_details']['thinking_tokens'] ?? 0,
                 );
             }
         }

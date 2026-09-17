@@ -160,12 +160,18 @@ trait AnthropicHelpers
         ];
     }
 
-    protected function messageDelta(string $stopReason, int $outputTokens): array
+    protected function messageDelta(string $stopReason, int $outputTokens, ?int $thinkingTokens = null): array
     {
+        $usage = ['output_tokens' => $outputTokens];
+
+        if ($thinkingTokens !== null) {
+            $usage['output_tokens_details'] = ['thinking_tokens' => $thinkingTokens];
+        }
+
         return [
             'type' => 'message_delta',
             'delta' => ['stop_reason' => $stopReason],
-            'usage' => ['output_tokens' => $outputTokens],
+            'usage' => $usage,
         ];
     }
 }

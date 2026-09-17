@@ -83,6 +83,27 @@ class AgentResponse extends TextResponse
     }
 
     /**
+     * Get every assistant step of a paused turn with the raw provider state needed to replay it.
+     *
+     * @return array<int, array{blocks: array<array-key, mixed>, tool_call_ids: array<int, string>}>
+     */
+    public function pausedSteps(): array
+    {
+        if (! $this->hasPendingApprovals()) {
+            return [];
+        }
+
+        return $this->messages
+            ->whereInstanceOf(AssistantMessage::class)
+            ->map(fn (AssistantMessage $message): array => [
+                'blocks' => $message->providerContentBlocks,
+                'tool_call_ids' => $message->toolCalls->pluck('id')->all(),
+            ])
+            ->values()
+            ->all();
+    }
+
+    /**
      * Get the raw provider replay state for the paused assistant turn, if any.
      *
      * @return array<int, array<string, mixed>>

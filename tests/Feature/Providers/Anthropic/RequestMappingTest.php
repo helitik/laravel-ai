@@ -354,6 +354,7 @@ describe('response parsing', function (): void {
                     'output_tokens' => 15,
                     'cache_creation_input_tokens' => 5,
                     'cache_read_input_tokens' => 3,
+                    'output_tokens_details' => ['thinking_tokens' => 9],
                 ],
             ]),
         ]);
@@ -365,7 +366,34 @@ describe('response parsing', function (): void {
 
         expect($response->usage)
             ->promptTokens->toBe(25)
-            ->completionTokens->toBe(15);
+            ->completionTokens->toBe(15)
+            ->reasoningTokens->toBe(9);
+    });
+
+    it('reports no reasoning tokens when the response omits the breakdown', function (): void {
+        Http::fake([
+            'api.anthropic.com/*' => Http::response([
+                'id' => 'msg_123',
+                'type' => 'message',
+                'role' => 'assistant',
+                'model' => 'claude-sonnet-4-6',
+                'content' => [['type' => 'text', 'text' => 'Hello']],
+                'stop_reason' => 'end_turn',
+                'usage' => [
+                    'input_tokens' => 25,
+                    'output_tokens' => 15,
+                ],
+            ]),
+        ]);
+
+        $response = (new AssistantAgent)->prompt(
+            'Hi',
+            provider: 'anthropic',
+        );
+
+        expect($response->usage)
+            ->completionTokens->toBe(15)
+            ->reasoningTokens->toBe(0);
     });
 });
 
