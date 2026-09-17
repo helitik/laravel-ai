@@ -11,6 +11,7 @@ use Laravel\Ai\Streaming\Events\TextEnd;
 use Laravel\Ai\Streaming\Events\TextStart;
 use Tests\Feature\Providers\DeepSeek\DeepSeekHelpers;
 use Tests\Fixtures\Agents\HistoricalReasoningWithoutToolCallsAgent;
+use Tests\Fixtures\Agents\HistoricalReasoningWithToolsAgent;
 use Tests\Fixtures\Agents\HistoricalToolCallWithEmptyReasoningAgent;
 use Tests\Fixtures\Agents\HistoricalToolCallWithoutReasoningAgent;
 use Tests\Fixtures\Agents\HistoricalToolCallWithReasoningAgent;
@@ -251,4 +252,16 @@ test('preserves tool calls when historical reasoning content is present', functi
         ->and($assistantMsg['tool_calls'][0]['function']['name'])->toBe('SearchProducts');
 
     expect($this->filterMessages($messages, 'tool'))->toHaveCount(1);
+});
+
+test('replays reasoning from turns without tool calls once the request carries tools', function (): void {
+    Http::fake(['api.deepseek.com/*' => fakeDeepSeekResponse('The answer is 6.')]);
+
+    (new HistoricalReasoningWithToolsAgent)->prompt('What is 3+3?', provider: 'deepseek', model: 'deepseek-reasoner');
+
+    $assistantMsg = $this->findMessage($this->requestMessages(0), role: 'assistant');
+
+    // DeepSeek returns a 400 when a tool-carrying request omits the reasoning of any prior turn...
+    expect($assistantMsg)->not->toHaveKey('tool_calls')
+        ->and($assistantMsg['reasoning_content'])->toBe('Let me think... 4+4 = 8.');
 });

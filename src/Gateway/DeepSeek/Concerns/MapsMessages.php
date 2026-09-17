@@ -15,7 +15,7 @@ trait MapsMessages
     /**
      * Map the given Laravel messages to Chat Completions messages format.
      */
-    protected function mapMessagesToChat(array $messages, ?string $instructions = null): array
+    protected function mapMessagesToChat(array $messages, ?string $instructions = null, bool $replayReasoning = false): array
     {
         $chatMessages = [];
 
@@ -31,7 +31,7 @@ trait MapsMessages
 
             match ($message->role) {
                 MessageRole::User => $this->mapUserMessage($message, $chatMessages),
-                MessageRole::Assistant => $this->mapAssistantMessage($message, $chatMessages),
+                MessageRole::Assistant => $this->mapAssistantMessage($message, $chatMessages, $replayReasoning),
                 MessageRole::ToolResult => $this->mapToolResultMessage($message, $chatMessages),
             };
         }
@@ -65,7 +65,7 @@ trait MapsMessages
     /**
      * Map an assistant message to Chat Completions format.
      */
-    protected function mapAssistantMessage(AssistantMessage|Message $message, array &$chatMessages): void
+    protected function mapAssistantMessage(AssistantMessage|Message $message, array &$chatMessages, bool $replayReasoning = false): void
     {
         $msg = ['role' => 'assistant'];
 
@@ -73,21 +73,19 @@ trait MapsMessages
             $msg['content'] = $message->content;
         }
 
-        if (! $message instanceof AssistantMessage) {
-            $chatMessages[] = $msg;
+        $calledTools = $message instanceof AssistantMessage && $message->toolCalls->isNotEmpty();
 
-            return;
-        }
-
-        if ($message->toolCalls->isNotEmpty()) {
+        if ($calledTools) {
             $msg['tool_calls'] = $message->toolCalls->map(
                 fn (ToolCall $toolCall) => $this->serializeToolCallToChat($toolCall)
             )->all();
+        }
 
-            // DeepSeek expects the key on every tool-call message, even when there was no reasoning...
-            $msg[ChatCompletionReasoning::CONTENT_BLOCK_KEY] = ChatCompletionReasoning::replayableFrom(
-                $message->providerContentBlocks
-            ) ?? '';
+        // DeepSeek requires the reasoning behind a tool call back, and once a request carries tools, that of every turn beside it...
+        if ($replayReasoning || $calledTools) {
+            $msg[ChatCompletionReasoning::CONTENT_BLOCK_KEY] = $message instanceof AssistantMessage
+                ? ChatCompletionReasoning::replayableFrom($message->providerContentBlocks) ?? ''
+                : '';
         }
 
         $chatMessages[] = $msg;

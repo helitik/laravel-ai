@@ -46,6 +46,7 @@ trait BuildsTextRequests
             'messages' => $this->mapMessagesToChat(
                 $messages,
                 $this->composeInstructions($instructions, $schema),
+                replayReasoning: filled($tools),
             ),
         ];
 
