@@ -2,7 +2,6 @@
 
 namespace Laravel\Ai\Gateway\OpenAiCompatible\Concerns;
 
-use Laravel\Ai\Gateway\OpenAiCompatible\ChatCompletionReasoning;
 use Laravel\Ai\Messages\AssistantMessage;
 use Laravel\Ai\Messages\Message;
 use Laravel\Ai\Messages\MessageRole;
@@ -78,33 +77,9 @@ trait MapsChatCompletionMessages
                 fn (ToolCall $toolCall) => $this->serializeToolCallToChat($toolCall)
             )->all();
 
-            // Thinking models need the reasoning that produced the tool calls replayed alongside them...
-            $msg = [...$msg, ...$this->replayableReasoningFor($message)];
         }
 
         $chatMessages[] = $msg;
-    }
-
-    /**
-     * Get the reasoning fields to replay for the given assistant message.
-     *
-     * Providers disagree on the inbound field name, so gateways override this to match their own API.
-     *
-     * @return array<string, mixed>
-     */
-    protected function replayableReasoningFor(AssistantMessage $message): array
-    {
-        $reasoning = ChatCompletionReasoning::replayableFrom($message->providerContentBlocks);
-
-        if ($reasoning === null) {
-            return [];
-        }
-
-        // vLLM renamed `reasoning_content` to `reasoning`, so the field it answered on is the one it accepts back...
-        return [ChatCompletionReasoning::replayableFieldFrom(
-            $message->providerContentBlocks,
-            default: ChatCompletionReasoning::CONTENT_BLOCK_KEY,
-        ) => $reasoning];
     }
 
     /**

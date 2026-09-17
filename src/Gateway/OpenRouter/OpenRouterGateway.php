@@ -21,11 +21,11 @@ use Laravel\Ai\Files\Image;
 use Laravel\Ai\Gateway\Concerns\HandlesFailoverErrors;
 use Laravel\Ai\Gateway\Concerns\ParsesServerSentEvents;
 use Laravel\Ai\Gateway\Concerns\WrapsPcmAudio;
-use Laravel\Ai\Gateway\OpenAiCompatible\ChatCompletionReasoning;
 use Laravel\Ai\Gateway\OpenAiCompatible\Concerns\MapsChatCompletionMessages;
 use Laravel\Ai\Gateway\OpenAiCompatible\Concerns\MapsChatCompletionTools;
 use Laravel\Ai\Gateway\OpenAiCompatible\Concerns\PerformsChatCompletionSteps;
 use Laravel\Ai\Messages\AssistantMessage;
+use Laravel\Ai\Messages\Message;
 use Laravel\Ai\Providers\Provider;
 use Laravel\Ai\Providers\Tools\ProviderTool;
 use Laravel\Ai\Providers\Tools\WebFetch;
@@ -50,7 +50,9 @@ class OpenRouterGateway implements Gateway, RerankingGateway, StepTextGateway
     use Concerns\MapsAttachments;
     use Concerns\ParsesTextResponses;
     use HandlesFailoverErrors;
-    use MapsChatCompletionMessages;
+    use MapsChatCompletionMessages {
+        mapAssistantMessage as mapChatCompletionAssistantMessage;
+    }
     use MapsChatCompletionTools;
     use ParsesServerSentEvents;
     use PerformsChatCompletionSteps;
@@ -62,25 +64,29 @@ class OpenRouterGateway implements Gateway, RerankingGateway, StepTextGateway
     }
 
     /**
-     * Get the reasoning fields to replay for the given assistant message, preferring the details that carry signatures and encrypted payloads.
-     *
-     * @return array<string, mixed>
+     * Map an assistant message, preserving OpenRouter reasoning details for tool continuation.
      */
-    protected function replayableReasoningFor(AssistantMessage $message): array
+    protected function mapAssistantMessage(AssistantMessage|Message $message, array &$chatMessages): void
     {
-        // DeepSeek V4 answers with an empty details array on silent turns and requires that array back...
-        $details = ChatCompletionReasoning::replayableDetailsFrom($message->providerContentBlocks);
+        $this->mapChatCompletionAssistantMessage($message, $chatMessages);
 
-        if ($details !== null) {
-            return [ChatCompletionReasoning::DETAILS_BLOCK_KEY => $details];
+        if (! $message instanceof AssistantMessage || $message->toolCalls->isEmpty()) {
+            return;
         }
 
-        $reasoning = ChatCompletionReasoning::replayableFrom($message->providerContentBlocks);
+        $details = Reasoning::replayableDetailsFrom($message->providerContentBlocks);
 
-        return $reasoning === null ? [] : [ChatCompletionReasoning::replayableFieldFrom(
-            $message->providerContentBlocks,
-            default: 'reasoning',
-        ) => $reasoning];
+        if ($details !== null) {
+            $chatMessages[array_key_last($chatMessages)]['reasoning_details'] = $details;
+
+            return;
+        }
+
+        $reasoning = Reasoning::replayableTextFrom($message->providerContentBlocks);
+
+        if ($reasoning !== null) {
+            $chatMessages[array_key_last($chatMessages)][Reasoning::replayableFieldFrom($message->providerContentBlocks)] = $reasoning;
+        }
     }
 
     /**

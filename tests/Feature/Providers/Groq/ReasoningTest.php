@@ -42,11 +42,11 @@ test('emits reasoning events while streaming', function (): void {
         ->and($events[6])->toBeInstanceOf(TextDelta::class)->delta->toBe('Hello');
 });
 
-test('replays reasoning alongside tool calls on the follow up request', function (): void {
+test('omits reasoning from tool call history', function (): void {
     Http::fake(['api.groq.com/*' => Http::sequence([
         Http::response([
             'id' => 'chatcmpl-123',
-            'model' => 'openai/gpt-oss-20b',
+            'model' => 'qwen/qwen3-32b',
             'choices' => [[
                 'index' => 0,
                 'message' => [
@@ -83,8 +83,8 @@ test('replays reasoning alongside tool calls on the follow up request', function
         fn (array $message): bool => isset($message['tool_calls'])
     );
 
-    expect($assistantMessage['reasoning'])->toBe('I need the generator for this.')
-        ->and($assistantMessage)->not->toHaveKey('reasoning_content');
+    expect($assistantMessage)->not->toHaveKey('reasoning')
+        ->not->toHaveKey('reasoning_content');
 });
 
 test('does not emit reasoning events when the stream has no reasoning', function (): void {

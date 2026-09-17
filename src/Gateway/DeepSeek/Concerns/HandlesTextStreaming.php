@@ -4,7 +4,7 @@ namespace Laravel\Ai\Gateway\DeepSeek\Concerns;
 
 use Generator;
 use Illuminate\Support\Str;
-use Laravel\Ai\Gateway\OpenAiCompatible\ChatCompletionReasoning;
+use Laravel\Ai\Gateway\ReasoningStream;
 use Laravel\Ai\Gateway\StepResponse;
 use Laravel\Ai\Providers\Provider;
 use Laravel\Ai\Responses\Data\Meta;
@@ -32,7 +32,8 @@ trait HandlesTextStreaming
         $streamBody,
     ): Generator {
         $messageId = $this->generateEventId();
-        $reasoning = new ChatCompletionReasoning($invocationId);
+        $reasoning = new ReasoningStream($invocationId);
+        $reasoningContent = '';
         $streamStartEmitted = false;
         $textStartEmitted = false;
         $currentText = '';
@@ -80,7 +81,17 @@ trait HandlesTextStreaming
                 ))->withInvocationId($invocationId);
             }
 
-            yield from $reasoning->process($delta);
+            $reasoningDelta = $delta['reasoning_content'] ?? '';
+
+            if (is_string($reasoningDelta)) {
+                $reasoningContent .= $reasoningDelta;
+
+                yield from $reasoning->push($reasoningDelta);
+            }
+
+            if ((is_string($delta['content'] ?? null) && $delta['content'] !== '') || filled($delta['tool_calls'] ?? null)) {
+                yield from $reasoning->close();
+            }
 
             if (isset($delta['content']) && $delta['content'] !== '') {
                 if (! $textStartEmitted) {
@@ -160,7 +171,7 @@ trait HandlesTextStreaming
             finishReason: $this->extractFinishReason(['finish_reason' => $finishReason ?? '']),
             usage: $usage ?? new Usage(0, 0),
             meta: new Meta($provider->name(), $responseModel),
-            providerContentBlocks: $reasoning->providerContentBlocks(),
+            providerContentBlocks: $reasoningContent === '' ? [] : ['reasoning_content' => $reasoningContent],
         );
     }
 

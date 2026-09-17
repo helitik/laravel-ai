@@ -241,17 +241,14 @@ class DatabaseConversationStore implements ConversationStore, PaginatesConversat
         ]);
     }
 
-    /**
-     * Build the message meta payload, tucking a paused turn's raw provider blocks alongside the response meta.
-     *
-     * @return array<string, mixed>
-     */
+    /** @return array<string, mixed> */
     protected function messageMeta(AgentResponse $response): array
     {
         $meta = (array) json_decode(json_encode($response->meta), true);
+        $providerSteps = $response->providerSteps();
 
-        if (filled($response->pausedProviderContentBlocks())) {
-            $meta['provider_steps'] = $response->pausedSteps();
+        if (collect($providerSteps)->contains(fn (array $step): bool => filled($step['blocks'] ?? []))) {
+            $meta['provider_steps'] = $providerSteps;
         }
 
         if (filled($response->reasoning)) {
@@ -295,6 +292,12 @@ class DatabaseConversationStore implements ConversationStore, PaginatesConversat
                     }
 
                     return [new Message('user', $record->content)];
+                }
+
+                $meta = (array) json_decode($record->meta ?? '[]', true);
+
+                if (filled($providerSteps = $meta['provider_steps'] ?? [])) {
+                    return $this->reconstructProviderTurn($record, $providerSteps, $toolCalls, $toolResults, $meta['provider'] ?? null);
                 }
 
                 if ($toolCalls->isNotEmpty()) {
@@ -410,10 +413,6 @@ class DatabaseConversationStore implements ConversationStore, PaginatesConversat
 
         $provider = $meta['provider'] ?? null;
 
-        if ($isPause && filled($providerSteps = $meta['provider_steps'] ?? [])) {
-            return array_merge($messages, $this->reconstructPausedTurn($record, $providerSteps, $toolCalls, $ownResults, $provider));
-        }
-
         // Rows written before per-step replay state carry only the paused step's blocks, so the whole turn replays as one message...
         if ($isPause && filled($providerContentBlocks = $meta['provider_content_blocks'] ?? [])) {
             $messages[] = new AssistantMessage($record->content, $toolCalls->map(ToolCall::fromArray(...))->values(), $providerContentBlocks, $provider);
@@ -453,13 +452,20 @@ class DatabaseConversationStore implements ConversationStore, PaginatesConversat
      * @param  Collection<int, array<string, mixed>>  $ownResults
      * @return array<int, Message>
      */
-    protected function reconstructPausedTurn(object $record, array $providerSteps, Collection $toolCalls, Collection $ownResults, ?string $provider): array
+    protected function reconstructProviderTurn(object $record, array $providerSteps, Collection $toolCalls, Collection $ownResults, ?string $provider): array
     {
         $callsById = $toolCalls->keyBy('id');
         $resultsById = $ownResults->keyBy('id');
         $lastStep = array_key_last($providerSteps);
+        $stepCallIds = collect($providerSteps)->flatMap(fn (array $step): array => $step['tool_call_ids'] ?? []);
 
         $messages = [];
+
+        $priorResults = $ownResults->reject(fn (array $result): bool => $stepCallIds->contains($result['id'] ?? null));
+
+        if ($priorResults->isNotEmpty()) {
+            $messages[] = new ToolResultMessage($priorResults->map(ToolResult::fromArray(...))->values());
+        }
 
         foreach ($providerSteps as $index => $step) {
             $stepCallIds = collect($step['tool_call_ids'] ?? []);

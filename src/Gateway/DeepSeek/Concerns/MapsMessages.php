@@ -2,7 +2,6 @@
 
 namespace Laravel\Ai\Gateway\DeepSeek\Concerns;
 
-use Laravel\Ai\Gateway\OpenAiCompatible\ChatCompletionReasoning;
 use Laravel\Ai\Messages\AssistantMessage;
 use Laravel\Ai\Messages\Message;
 use Laravel\Ai\Messages\MessageRole;
@@ -83,8 +82,8 @@ trait MapsMessages
 
         // DeepSeek requires the reasoning behind a tool call back, and once a request carries tools, that of every turn beside it...
         if ($replayReasoning || $calledTools) {
-            $msg[ChatCompletionReasoning::CONTENT_BLOCK_KEY] = $message instanceof AssistantMessage
-                ? ChatCompletionReasoning::replayableFrom($message->providerContentBlocks) ?? ''
+            $msg['reasoning_content'] = $message instanceof AssistantMessage
+                ? (string) ($message->providerContentBlocks['reasoning_content'] ?? '')
                 : '';
         }
 

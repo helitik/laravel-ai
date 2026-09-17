@@ -4,7 +4,6 @@ namespace Laravel\Ai\Gateway\DeepSeek\Concerns;
 
 use Laravel\Ai\Exceptions\AiException;
 use Laravel\Ai\Gateway\Concerns\DecodesStructuredOutput;
-use Laravel\Ai\Gateway\OpenAiCompatible\ChatCompletionReasoning;
 use Laravel\Ai\Gateway\StepResponse;
 use Laravel\Ai\Providers\Provider;
 use Laravel\Ai\Responses\Data\FinishReason;
@@ -36,8 +35,7 @@ trait ParsesTextResponses
      * Parse the DeepSeek response data into a single step response.
      *
      * DeepSeek thinking-mode responses can include `reasoning_content` on each
-     * choice's message. We capture it into `providerContentBlocks`; the message
-     * mapper only replays it for assistant messages that include tool calls.
+     * choice's message, which must survive tool-enabled conversation history.
      */
     protected function parseTextResponse(
         array $data,
@@ -65,7 +63,9 @@ trait ParsesTextResponses
             usage: $this->extractUsage($data),
             meta: new Meta($provider->name(), $model),
             structured: $structured ? $this->decodeStructuredOutput($text) : null,
-            providerContentBlocks: ChatCompletionReasoning::providerContentBlocksIn($message),
+            providerContentBlocks: is_string($message['reasoning_content'] ?? null)
+                ? ['reasoning_content' => $message['reasoning_content']]
+                : [],
         );
     }
 

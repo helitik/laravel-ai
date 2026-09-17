@@ -292,6 +292,31 @@ function fakeOpenRouterToolCallResponse(array $message = []): PromiseInterface
     ]);
 }
 
+function configureOpenAiCompatible(): void
+{
+    config(['ai.providers.openai-compatible' => [
+        'driver' => 'openai-compatible',
+        'url' => 'http://localhost:1234/v1',
+        'key' => 'test-key',
+        'models' => ['text' => ['default' => 'local-model']],
+    ]]);
+}
+
+function fakeOpenAiCompatibleResponse(string $content): PromiseInterface
+{
+    return Http::response([
+        'id' => 'chatcmpl-123',
+        'object' => 'chat.completion',
+        'model' => 'local-model',
+        'choices' => [[
+            'index' => 0,
+            'message' => ['role' => 'assistant', 'content' => $content],
+            'finish_reason' => 'stop',
+        ]],
+        'usage' => ['prompt_tokens' => 1, 'completion_tokens' => 1],
+    ]);
+}
+
 function fakeDeepSeekToolCallResponse(): PromiseInterface
 {
     return Http::response([

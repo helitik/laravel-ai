@@ -252,6 +252,7 @@ class TextGenerationLoop
                     FinishReason::Stop->value,
                     $accumulatedUsage,
                     time(),
+                    [],
                 ))->withInvocationId($invocationId);
 
                 return;
@@ -393,6 +394,7 @@ class TextGenerationLoop
             ($finalReason ?? FinishReason::Stop)->value,
             $accumulatedUsage,
             time(),
+            $providerSteps,
         ))->withInvocationId($invocationId);
     }
 

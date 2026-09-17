@@ -36,6 +36,7 @@ use Laravel\Ai\Streaming\Events\Citation as CitationEvent;
 use Laravel\Ai\Streaming\Events\ReasoningDelta;
 use Laravel\Ai\Streaming\Events\ReasoningEnd;
 use Laravel\Ai\Streaming\Events\ReasoningStart;
+use Laravel\Ai\Streaming\Events\StreamEnd;
 use Laravel\Ai\Streaming\Events\TextDelta;
 use Laravel\Ai\Streaming\Events\ToolApprovalRequest;
 use Tests\Fixtures\Agents\RememberingToolUsingAgent;
@@ -1000,7 +1001,7 @@ test('it records every step of a paused turn into the message meta', function ()
         ]);
 });
 
-test('it omits provider content blocks when the assistant turn is not paused', function (): void {
+test('it stores and rehydrates provider content blocks from a completed turn', function (): void {
     $store = new DatabaseConversationStore;
     $conversationId = $store->storeConversation('user', 1, 'Tool conversation');
 
@@ -1012,16 +1013,25 @@ test('it omits provider content blocks when the assistant turn is not paused', f
         'test-model',
     );
 
-    $response = (new AgentResponse('invocation-id', 'Deleted the file.', new Usage, new Meta))
+    $response = (new AgentResponse('invocation-id', 'Deleted the file.', new Usage, new Meta('deepseek')))
         ->withMessages(collect([
-            new AssistantMessage('Deleted the file.', null, [['type' => 'thinking', 'signature' => 'sig-1']]),
+            new AssistantMessage('Deleted the file.', null, ['reasoning_content' => 'I should delete the file.']),
         ]));
 
     $store->storeAssistantMessage($conversationId, 'user', 1, $prompt, $response);
 
     $record = DB::table('agent_conversation_messages')->where('role', 'assistant')->first();
 
-    expect(json_decode((string) $record->meta, true))->not->toHaveKey('provider_steps');
+    expect(json_decode((string) $record->meta, true))->toHaveKey('provider_steps', [[
+        'blocks' => ['reasoning_content' => 'I should delete the file.'],
+        'tool_call_ids' => [],
+    ]]);
+
+    $message = $store->getLatestConversationMessages($conversationId, 10)->sole();
+
+    expect($message)->toBeInstanceOf(AssistantMessage::class)
+        ->and($message->providerContentBlocks)->toBe(['reasoning_content' => 'I should delete the file.'])
+        ->and($message->providerContentBlocksProvider)->toBe('deepseek');
 });
 
 test('it records every step of a paused stream into the message meta', function (): void {
@@ -1054,6 +1064,34 @@ test('it records every step of a paused stream into the message meta', function 
             ['blocks' => [['type' => 'thinking', 'signature' => 'sig-0']], 'tool_call_ids' => ['call-0']],
             ['blocks' => [['type' => 'thinking', 'signature' => 'sig-1']], 'tool_call_ids' => ['call-1']],
         ]);
+});
+
+test('it stores provider content blocks from a completed stream', function (): void {
+    $store = new DatabaseConversationStore;
+    $conversationId = $store->storeConversation('user', 1, 'Reasoning conversation');
+
+    $prompt = new AgentPrompt(
+        new ToolUsingAgent,
+        'Think about this.',
+        [],
+        Mockery::mock(TextProvider::class),
+        'test-model',
+    );
+
+    $response = new StreamedAgentResponse('invocation-id', collect([
+        new StreamEnd('event-1', 'stop', new Usage, time(), [[
+            'blocks' => ['reasoning_content' => 'I considered it.'],
+            'tool_call_ids' => [],
+        ]]),
+    ]), new Meta('deepseek'));
+
+    $store->storeAssistantMessage($conversationId, 'user', 1, $prompt, $response);
+
+    $message = $store->getLatestConversationMessages($conversationId, 10)->sole();
+
+    expect($message)->toBeInstanceOf(AssistantMessage::class)
+        ->and($message->providerContentBlocks)->toBe(['reasoning_content' => 'I considered it.'])
+        ->and($message->providerContentBlocksProvider)->toBe('deepseek');
 });
 
 test('it replays a legacy pause row written before per-step replay state as one message', function (): void {

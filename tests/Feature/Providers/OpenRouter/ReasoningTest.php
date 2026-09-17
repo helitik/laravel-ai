@@ -303,7 +303,50 @@ test('captures encrypted reasoning details so they can be replayed', function ()
     ]]);
 });
 
-test('strips anthropic reasoning text that lost its signature before replaying', function (): void {
+test('merges streamed encrypted detail fragments by index', function (): void {
+    Http::fake([
+        '*' => Http::sequence([
+            Http::response($this->ssePayload([
+                $this->chatChunk(['role' => 'assistant', 'reasoning_details' => [[
+                    'type' => 'reasoning.encrypted',
+                    'data' => 'gAAAA',
+                    'format' => 'anthropic-claude-v1',
+                    'index' => 0,
+                ]]]),
+                $this->chatChunk(['reasoning_details' => [[
+                    'type' => 'reasoning.encrypted',
+                    'data' => 'AB...',
+                    'id' => 'reasoning-encrypted-1',
+                    'format' => 'anthropic-claude-v1',
+                    'index' => 0,
+                ]]]),
+                $this->chatChunkToolCallStart(0, 'call_1', 'FixedNumberGenerator'),
+                $this->chatChunkToolCallDelta(0, '{}'),
+                $this->chatChunkFinish('tool_calls', ['prompt_tokens' => 10, 'completion_tokens' => 5]),
+            ])),
+            Http::response($this->ssePayload([
+                $this->chatChunk(['role' => 'assistant', 'content' => 'The number is 72019']),
+                $this->chatChunkFinish('stop', ['prompt_tokens' => 20, 'completion_tokens' => 5]),
+            ])),
+        ]),
+    ]);
+
+    foreach (agent(tools: [new FixedNumberGenerator])->stream('Give me a number', provider: 'openrouter') as $event) {
+        //
+    }
+
+    $assistantMessage = $this->findMessage($this->requestMessages(1), role: 'assistant', has: 'tool_calls');
+
+    expect($assistantMessage['reasoning_details'])->toBe([[
+        'type' => 'reasoning.encrypted',
+        'data' => 'gAAAAAB...',
+        'format' => 'anthropic-claude-v1',
+        'index' => 0,
+        'id' => 'reasoning-encrypted-1',
+    ]]);
+});
+
+test('replays anthropic reasoning details with a null signature unchanged', function (): void {
     Http::fake([
         '*' => Http::sequence([
             fakeOpenRouterToolCallResponse([
@@ -311,6 +354,7 @@ test('strips anthropic reasoning text that lost its signature before replaying',
                 'reasoning_details' => [[
                     'type' => 'reasoning.text',
                     'text' => 'I need the generator for this.',
+                    'signature' => null,
                     'id' => 'reasoning-text-1',
                     'format' => 'anthropic-claude-v1',
                 ]],
@@ -323,9 +367,13 @@ test('strips anthropic reasoning text that lost its signature before replaying',
 
     $assistantMessage = $this->findMessage($this->requestMessages(1), role: 'assistant', has: 'tool_calls');
 
-    // An unsigned thinking block is rejected by Anthropic, so the plain text is replayed instead...
-    expect($assistantMessage)->not->toHaveKey('reasoning_details')
-        ->and($assistantMessage['reasoning'])->toBe('I need the generator for this.');
+    expect($assistantMessage['reasoning_details'])->toBe([[
+        'type' => 'reasoning.text',
+        'text' => 'I need the generator for this.',
+        'signature' => null,
+        'id' => 'reasoning-text-1',
+        'format' => 'anthropic-claude-v1',
+    ]])->and($assistantMessage)->not->toHaveKey('reasoning');
 });
 
 test('replays anthropic reasoning text that kept its signature', function (): void {
@@ -351,7 +399,7 @@ test('replays anthropic reasoning text that kept its signature', function (): vo
     expect($assistantMessage['reasoning_details'][0]['signature'])->toBe('sha256:abc123');
 });
 
-test('falls back to plain reasoning when any block in the sequence lost its signature', function (): void {
+test('replays the complete reasoning details sequence unchanged', function (): void {
     Http::fake([
         '*' => Http::sequence([
             fakeOpenRouterToolCallResponse([
@@ -380,9 +428,10 @@ test('falls back to plain reasoning when any block in the sequence lost its sign
 
     $assistantMessage = $this->findMessage($this->requestMessages(1), role: 'assistant', has: 'tool_calls');
 
-    // Replaying the signed block alone would leave a gap in a sequence OpenRouter requires back unmodified...
-    expect($assistantMessage)->not->toHaveKey('reasoning_details')
-        ->and($assistantMessage['reasoning'])->toBe('First thought. Second thought.');
+    expect($assistantMessage['reasoning_details'])->toHaveCount(2)
+        ->and($assistantMessage['reasoning_details'][0])->not->toHaveKey('signature')
+        ->and($assistantMessage['reasoning_details'][1]['signature'])->toBe('sha256:abc123')
+        ->and($assistantMessage)->not->toHaveKey('reasoning');
 });
 
 test('captures reasoning text that is only a zero', function (): void {
@@ -512,6 +561,51 @@ test('merges streamed reasoning detail fragments into one replayable block', fun
     ]]);
 });
 
+test('keeps using the detail index when a later fragment adds an id', function (): void {
+    Http::fake([
+        '*' => Http::sequence([
+            Http::response($this->ssePayload([
+                $this->chatChunk(['role' => 'assistant', 'reasoning_details' => [[
+                    'type' => 'reasoning.text',
+                    'text' => 'Step by step,',
+                    'format' => 'anthropic-claude-v1',
+                    'index' => 0,
+                ]]]),
+                $this->chatChunk(['reasoning_details' => [[
+                    'type' => 'reasoning.text',
+                    'text' => ' then.',
+                    'signature' => 'sig-abc',
+                    'id' => 'reasoning-text-1',
+                    'format' => 'anthropic-claude-v1',
+                    'index' => 0,
+                ]]]),
+                $this->chatChunkToolCallStart(0, 'call_1', 'FixedNumberGenerator'),
+                $this->chatChunkToolCallDelta(0, '{}'),
+                $this->chatChunkFinish('tool_calls', ['prompt_tokens' => 10, 'completion_tokens' => 5]),
+            ])),
+            Http::response($this->ssePayload([
+                $this->chatChunk(['role' => 'assistant', 'content' => 'The number is 72019']),
+                $this->chatChunkFinish('stop', ['prompt_tokens' => 20, 'completion_tokens' => 5]),
+            ])),
+        ]),
+    ]);
+
+    foreach (agent(tools: [new FixedNumberGenerator])->stream('Give me a number', provider: 'openrouter') as $event) {
+        //
+    }
+
+    $assistantMessage = $this->findMessage($this->requestMessages(1), role: 'assistant', has: 'tool_calls');
+
+    expect($assistantMessage['reasoning_details'])->toBe([[
+        'type' => 'reasoning.text',
+        'text' => 'Step by step, then.',
+        'format' => 'anthropic-claude-v1',
+        'index' => 0,
+        'signature' => 'sig-abc',
+        'id' => 'reasoning-text-1',
+    ]]);
+});
+
 test('concatenates a fragment that happens to start with the text captured so far', function (): void {
     Http::fake([
         '*' => Http::sequence([
@@ -608,7 +702,7 @@ test('sends no reasoning details key when the response carried none', function (
     expect($assistantMessage)->not->toHaveKey('reasoning_details');
 });
 
-test('falls back to plain reasoning when a gemini block lost its thought signature', function (): void {
+test('replays gemini reasoning details exactly as OpenRouter returned them', function (): void {
     Http::fake([
         '*' => Http::sequence([
             fakeOpenRouterToolCallResponse([
@@ -628,9 +722,12 @@ test('falls back to plain reasoning when a gemini block lost its thought signatu
 
     $assistantMessage = $this->findMessage($this->requestMessages(1), role: 'assistant', has: 'tool_calls');
 
-    // Gemini reports a corrupted thought signature rather than ignoring the block...
-    expect($assistantMessage)->not->toHaveKey('reasoning_details')
-        ->and($assistantMessage['reasoning'])->toBe('I need the generator for this.');
+    expect($assistantMessage['reasoning_details'])->toBe([[
+        'type' => 'reasoning.text',
+        'text' => 'I need the generator for this.',
+        'id' => 'reasoning-text-1',
+        'format' => 'google-gemini-v1',
+    ]])->and($assistantMessage)->not->toHaveKey('reasoning');
 });
 
 test('replays reasoning under the reasoning_content field when the response used it', function (): void {
@@ -700,8 +797,9 @@ test('counts reasoning once when a chunk carries both plain text and reasoning d
 
     $reasoning = array_values(array_filter($events, fn ($e): bool => $e instanceof ReasoningDelta));
 
-    expect($reasoning)->toHaveCount(1)
-        ->and($reasoning[0]->delta)->toBe('Thinking it through.');
+    expect($reasoning)->toHaveCount(2)
+        ->and($reasoning[0]->delta)->toBe('Thinking it through.')
+        ->and($reasoning[1]->delta)->toBe(' Nearly there.');
 });
 
 test('ignores another provider reasoning block shape when replaying', function (): void {

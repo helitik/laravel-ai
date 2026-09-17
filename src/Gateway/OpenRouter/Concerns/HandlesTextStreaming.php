@@ -4,7 +4,7 @@ namespace Laravel\Ai\Gateway\OpenRouter\Concerns;
 
 use Generator;
 use Illuminate\Support\Str;
-use Laravel\Ai\Gateway\OpenAiCompatible\ChatCompletionReasoning;
+use Laravel\Ai\Gateway\OpenRouter\Reasoning;
 use Laravel\Ai\Gateway\StepResponse;
 use Laravel\Ai\Providers\Provider;
 use Laravel\Ai\Responses\Data\Meta;
@@ -33,7 +33,7 @@ trait HandlesTextStreaming
         $streamModel = $model;
         $streamStartEmitted = false;
         $textStartEmitted = false;
-        $reasoning = new ChatCompletionReasoning($invocationId);
+        $reasoning = new Reasoning($invocationId);
         $currentText = '';
         $toolCalls = [];
         $pendingToolCalls = [];

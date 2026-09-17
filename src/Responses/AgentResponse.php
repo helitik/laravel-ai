@@ -93,6 +93,16 @@ class AgentResponse extends TextResponse
             return [];
         }
 
+        return $this->providerSteps();
+    }
+
+    /**
+     * Get every assistant step with its raw provider replay state.
+     *
+     * @return array<int, array{blocks: array<array-key, mixed>, tool_call_ids: array<int, string>}>
+     */
+    public function providerSteps(): array
+    {
         return $this->messages
             ->whereInstanceOf(AssistantMessage::class)
             ->map(fn (AssistantMessage $message): array => [
@@ -106,7 +116,7 @@ class AgentResponse extends TextResponse
     /**
      * Get the raw provider replay state for the paused assistant turn, if any.
      *
-     * @return array<int, array<string, mixed>>
+     * @return array<array-key, mixed>
      */
     public function pausedProviderContentBlocks(): array
     {

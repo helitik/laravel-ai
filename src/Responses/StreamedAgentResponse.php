@@ -62,9 +62,20 @@ class StreamedAgentResponse extends AgentResponse
     }
 
     /**
+     * Get every assistant step with its raw provider replay state.
+     *
+     * @return array<int, array{blocks: array<array-key, mixed>, tool_call_ids: array<int, string>}>
+     */
+    public function providerSteps(): array
+    {
+        return $this->events->whereInstanceOf(StreamEnd::class)->last()?->providerSteps
+            ?? $this->pausedSteps();
+    }
+
+    /**
      * Get the raw provider replay state for the paused assistant turn, if any.
      *
-     * @return array<int, array<string, mixed>>
+     * @return array<array-key, mixed>
      */
     public function pausedProviderContentBlocks(): array
     {

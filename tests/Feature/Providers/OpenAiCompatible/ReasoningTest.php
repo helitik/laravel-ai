@@ -70,7 +70,7 @@ test('emits reasoning events while streaming', function (): void {
     expect($types)->toContain(ReasoningStart::class)->toContain(ReasoningEnd::class);
 });
 
-test('replays reasoning under the reasoning field current vllm answers on', function (): void {
+test('does not infer reasoning replay support from the response field', function (): void {
     Http::fake(['*' => Http::sequence([
         fakeOpenAiCompatibleToolCallResponse(['reasoning' => 'I need the generator for this.']),
         fakeOpenAiCompatibleResponse('The number is 72019'),
@@ -79,11 +79,11 @@ test('replays reasoning under the reasoning field current vllm answers on', func
     agent(tools: [new FixedNumberGenerator])->prompt('Give me a number', provider: 'openai-compatible');
 
     expect(openAiCompatibleToolCallMessage())
-        ->reasoning->toBe('I need the generator for this.')
+        ->not->toHaveKey('reasoning')
         ->not->toHaveKey('reasoning_content');
 });
 
-test('replays reasoning under the legacy reasoning_content field when the upstream uses it', function (): void {
+test('does not replay legacy reasoning content without a provider contract', function (): void {
     Http::fake(['*' => Http::sequence([
         fakeOpenAiCompatibleToolCallResponse(['reasoning_content' => 'I need the generator for this.']),
         fakeOpenAiCompatibleResponse('The number is 72019'),
@@ -92,7 +92,7 @@ test('replays reasoning under the legacy reasoning_content field when the upstre
     agent(tools: [new FixedNumberGenerator])->prompt('Give me a number', provider: 'openai-compatible');
 
     expect(openAiCompatibleToolCallMessage())
-        ->reasoning_content->toBe('I need the generator for this.')
+        ->not->toHaveKey('reasoning_content')
         ->not->toHaveKey('reasoning');
 });
 
